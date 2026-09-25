@@ -1,18 +1,21 @@
 # Melody
 
-A small, ad-free Android music player. Browse trending tracks, search the Audius catalog, play and seek tracks, and save favorites locally. Requires an internet connection; available tracks depend on Audius. Some tracks may restrict streaming. This app adds no advertisements.
+An ad-free Android player for music on [Audius](https://docs.audius.co/). This independent app is not affiliated with Audius or Spotify.
+
+## Features
+
+- Search ranks exact song titles first. Telugu discovery is the default; choose Hindi, English or All as needed. Catalog availability depends on Audius.
+- Favorites and custom playlists are stored on the phone without sign-in.
+- Songs that artists make publicly downloadable can be saved for offline playback inside the app. Long press an offline song to delete it.
+- Bass boost and equalizer presets use Android audio effects and depend on device support.
+- No advertisements, tracking SDKs or storage permissions. Internet traffic is HTTPS only.
+
+Audio quality depends on the source recording and Audius stream; sound controls do not increase the recording bitrate. Playback currently works while the app is open.
 
 ## Get the APK
 
-Open **Actions → Build Android APK → latest successful run → Artifacts → Melody-APK**. Download and unzip the artifact, then install `app-debug.apk` on an Android 8.0 or newer phone. Android may ask you to allow installation from the app used to open the file. This is a debug-signed personal test build; it is not a Play Store release.
+Open **Actions → Build Android APK → latest successful run → Artifacts → Melody-APK**, unzip, and install `app-debug.apk` on Android 8.0 or newer. This personal test build is debug signed, not a Play Store release. Each GitHub runner may use a different debug key, so an update from a previous build may require uninstalling the previous APK first. Uninstalling deletes local favorites, playlists and offline songs. A stable release signing key stored privately is needed for reliable in-place updates.
 
 ## Build locally
 
-Install JDK 17, Android SDK platform 35 and build tools 35.0.0, and Gradle 8.9. Run `gradle assembleDebug` in the project root.
-
-## Details
-
-- Online catalog: [Audius](https://docs.audius.co/); this is an independent app, not affiliated with Audius or Spotify.
-- Favorites are stored only on your phone. Clearing the app's data removes them.
-- Playback works while the app is open. Background service, downloads, accounts, and playlists are outside this first version.
-- A song can fail when Audius restricts access, its host is temporarily unavailable, or the network is offline. Skip to another track in that case.
+Install JDK 17, Android SDK platform 35 and build tools 35.0.0, and Gradle 8.9. Run `gradle assembleDebug lintDebug` in the project root.
