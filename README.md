@@ -4,13 +4,17 @@ An ad-free Android player for music on [Audius](https://docs.audius.co/). This i
 
 ## Features
 
-- Search ranks exact song titles first. Telugu discovery is the default; choose Hindi, English or All as needed. Catalog availability depends on Audius.
+- Search ranks exact song titles first. It also checks artist supplied album, description and tags where available. Telugu discovery is the default; choose Hindi, English or All as needed. Catalog availability depends on Audius.
+- The **On phone** tab imports audio files you own through Android's file picker without requesting broad storage access. Local song search also checks embedded album, composer and author tags where present. This is a practical way to play older Telugu songs already on your device.
+- Tap the small player or **Expand** to view artwork and a larger player. Playback advances through the current song list. It includes previous, next, 10-second seeking and repeat controls.
 - Favorites and custom playlists are stored on the phone without sign-in.
-- Songs that artists make publicly downloadable can be saved for offline playback inside the app. Long press an offline song to delete it.
+- A download button is visible beside each song. Audius downloads work only when the artist enables public downloads. Long press an offline song to delete it.
 - Bass boost and equalizer presets use Android audio effects and depend on device support.
 - No advertisements, tracking SDKs or storage permissions. Internet traffic is HTTPS only.
 
 Audio quality depends on the source recording and Audius stream; sound controls do not increase the recording bitrate. Playback currently works while the app is open.
+
+**Catalog limitation:** Melody cannot legally promise every commercial Telugu film recording, old or new. Adding a complete catalog requires a licensed provider and its playback rights. Searching by film, actor, singer or lyric writer works only if the source provides that metadata and the song itself is available to play.
 
 ## Get the APK
 
