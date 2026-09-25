@@ -2,13 +2,19 @@ package com.melody.player;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
+import android.content.Intent;
+import android.content.ClipData;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.Drawable;
 import android.media.AudioAttributes;
 import android.media.MediaPlayer;
+import android.media.MediaMetadataRetriever;
+import android.net.Uri;
 import android.media.audiofx.BassBoost;
 import android.media.audiofx.Equalizer;
 import android.os.Bundle;
@@ -18,9 +24,11 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
+import android.view.Window;
 import android.widget.EditText;
 import android.widget.Toast;
 import android.widget.ImageView;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -41,29 +49,32 @@ import java.util.List;
 import java.util.Collections;
 import java.util.Locale;
 import java.util.Map;
+import java.text.Normalizer;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
-    private static final int BG = Color.rgb(14, 17, 28);
-    private static final int CARD = Color.rgb(29, 34, 49);
+    private static final int BG = Color.rgb(16, 17, 24);
+    private static final int CARD = Color.rgb(32, 34, 43);
     private static final int WHITE = Color.rgb(248, 249, 255);
-    private static final int MUTED = Color.rgb(166, 173, 193);
-    private static final int ACCENT = Color.rgb(161, 118, 255);
+    private static final int MUTED = Color.rgb(175, 179, 191);
+    private static final int ACCENT = Color.rgb(255, 139, 57);
     private static final String API = "https://api.audius.co/v1/tracks";
+    private static final int PICK_AUDIO = 18;
 
     private final ExecutorService work = Executors.newFixedThreadPool(3);
     private final ExecutorService images = Executors.newFixedThreadPool(3);
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Map<String, Track> favorites = new LinkedHashMap<>();
     private final Map<String, Track> downloads = new LinkedHashMap<>();
+    private final Map<String, Track> localTracks = new LinkedHashMap<>();
     private final Map<String, List<Track>> playlists = new LinkedHashMap<>();
     private final List<Track> visibleTracks = new ArrayList<>();
     private final List<Track> playQueue = new ArrayList<>();
     private final Map<String, Bitmap> artworkCache = new HashMap<>();
 
     private LinearLayout rows, root, player;
-    private TextView sectionTitle, message, nowTitle, nowArtist, playButton, favoriteButton, elapsed, total;
+    private TextView sectionTitle, message, nowTitle, nowArtist, playButton, favoriteButton, elapsed, total, phoneAction;
     private SeekBar timeline;
     private EditText search;
     private MediaPlayer mediaPlayer;
@@ -73,6 +84,13 @@ public final class MainActivity extends Activity {
     private String language = "Telugu";
     private String selectedPlaylist;
     private boolean showingDownloads = false;
+    private boolean showingLocal = false;
+    private Dialog expanded;
+    private ImageView miniArtwork, expandedArtwork;
+    private TextView expandedTitle, expandedArtist, expandedPlay, expandedTime, expandedRepeat;
+    private SeekBar expandedTimeline;
+    private int repeatMode = 1; // 0 stops at the end, 1 continues the queue, 2 repeats this song.
+    private int consecutiveErrors;
     private Track current;
     private int currentIndex = -1;
     private int requestVersion = 0;
@@ -81,15 +99,22 @@ public final class MainActivity extends Activity {
     private boolean userSeeking = false;
 
     private static final class Track {
-        final String id, title, artist, artwork;
+        final String id, title, artist, artwork, details, searchHints;
         final boolean downloadable;
         Track(String id, String title, String artist, String artwork, boolean downloadable) {
-            this.id = id; this.title = title; this.artist = artist; this.artwork = artwork;
-            this.downloadable = downloadable;
+            this(id,title,artist,artwork,downloadable,"");
         }
+        Track(String id, String title, String artist, String artwork, boolean downloadable, String details) {
+            this(id,title,artist,artwork,downloadable,details,details);
+        }
+        Track(String id, String title, String artist, String artwork, boolean downloadable, String details, String searchHints) {
+            this.id = id; this.title = title; this.artist = artist; this.artwork = artwork;
+            this.downloadable = downloadable; this.details = details; this.searchHints = searchHints;
+        }
+        boolean isLocal() { return id.startsWith("local:"); }
         JSONObject json() {
             JSONObject value = new JSONObject();
-            try { value.put("id", id); value.put("title", title); value.put("artist", artist); value.put("artwork", artwork); value.put("downloadable", downloadable); }
+            try { value.put("id", id); value.put("title", title); value.put("artist", artist); value.put("artwork", artwork); value.put("downloadable", downloadable); value.put("details", details); value.put("searchHints", searchHints); }
             catch (Exception ignored) { }
             return value;
         }
@@ -101,8 +126,10 @@ public final class MainActivity extends Activity {
         getWindow().setNavigationBarColor(BG);
         loadFavorites();
         loadCollections();
+        loadLocalSongs();
         bassLevel = getPreferences(MODE_PRIVATE).getInt("bass", 0);
         eqPreset = getPreferences(MODE_PRIVATE).getInt("eqPreset", 0);
+        repeatMode = getPreferences(MODE_PRIVATE).getInt("repeat", 1);
         drawScreen();
         loadTracks("");
         main.postDelayed(this::updateProgress, 500);
@@ -113,6 +140,12 @@ public final class MainActivity extends Activity {
     private GradientDrawable background(int color, int radius) {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setColor(color);
+        drawable.setCornerRadius(dp(radius));
+        return drawable;
+    }
+
+    private GradientDrawable gradient(int start, int end, int radius) {
+        GradientDrawable drawable = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{start,end});
         drawable.setCornerRadius(dp(radius));
         return drawable;
     }
@@ -146,13 +179,21 @@ public final class MainActivity extends Activity {
         setContentView(root);
 
         LinearLayout header = vertical();
-        header.setPadding(dp(22), dp(20), dp(22), dp(12));
-        TextView brand = label("♫  Melody", 32, WHITE, true);
+        header.setPadding(dp(22), dp(23), dp(22), dp(22));
+        header.setBackground(gradient(Color.rgb(107, 51, 27), BG, 0));
+        TextView brand = label("◖♫◗  Melody", 31, WHITE, true);
         header.addView(brand);
-        TextView tagline = label("Telugu first • Hindi & English • No ads", 14, MUTED, false);
+        TextView tagline = label("Your songs. Your sound. Telugu first.", 14, Color.rgb(246, 202, 168), false);
         LinearLayout.LayoutParams tagParams = new LinearLayout.LayoutParams(-1, -2);
         tagParams.topMargin = dp(4); header.addView(tagline, tagParams);
         root.addView(header);
+
+        TextView feature = label("  ✦  Discover   ·   Playlists   ·   Music on your phone  ", 13, WHITE, true);
+        feature.setGravity(Gravity.CENTER_VERTICAL);
+        feature.setBackground(gradient(Color.rgb(104, 53, 29), Color.rgb(53, 44, 43), 16));
+        LinearLayout.LayoutParams featureParams = new LinearLayout.LayoutParams(-1, dp(42));
+        featureParams.setMargins(dp(22), dp(3), dp(22), dp(11));
+        root.addView(feature, featureParams);
 
         LinearLayout searchRow = new LinearLayout(this);
         searchRow.setPadding(dp(22), dp(8), dp(22), dp(14));
@@ -161,7 +202,7 @@ public final class MainActivity extends Activity {
         search.setTextSize(15);
         search.setTextColor(WHITE);
         search.setHintTextColor(MUTED);
-        search.setHint("Search songs or artists");
+        search.setHint("Song, film, singer, writer or artist");
         search.setPadding(dp(16), 0, dp(12), 0);
         search.setBackground(background(CARD, 14));
         searchRow.addView(search, new LinearLayout.LayoutParams(0, dp(50), 1));
@@ -208,7 +249,8 @@ public final class MainActivity extends Activity {
         savedTab = saved;
         saved.setPadding(0, dp(8), 0, dp(8));
         saved.setOnClickListener(v -> {
-            showingFavorites = true; showingDownloads = false; selectedPlaylist = null;
+            showingFavorites = true; showingDownloads = false; showingLocal = false; selectedPlaylist = null;
+            phoneAction.setVisibility(View.GONE);
             requestVersion++;
             sectionTitle.setText("Your favorites");
             message.setText(favorites.isEmpty() ? "No favorites yet. Tap the heart on a song to save it." : "Saved on this phone");
@@ -224,7 +266,14 @@ public final class MainActivity extends Activity {
         offlineTab.setPadding(0, dp(8), 0, dp(8));
         offlineTab.setOnClickListener(v -> showDownloads());
         tabs.addView(offlineTab);
-        root.addView(tabs);
+        TextView phoneTab = label("On phone", 16, MUTED, true);
+        phoneTab.setPadding(dp(12), dp(8), dp(12), dp(8));
+        phoneTab.setOnClickListener(v -> showLocalSongs());
+        tabs.addView(phoneTab);
+        HorizontalScrollView tabStrip = new HorizontalScrollView(this);
+        tabStrip.setHorizontalScrollBarEnabled(false);
+        tabStrip.addView(tabs);
+        root.addView(tabStrip);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -236,13 +285,20 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams info = new LinearLayout.LayoutParams(-1, -2);
         info.topMargin = dp(7); info.bottomMargin = dp(15);
         content.addView(message, info);
+        phoneAction = button("＋  Add audio files from your phone", Color.rgb(88, 53, 35));
+        phoneAction.setTextSize(14);
+        phoneAction.setOnClickListener(v -> pickLocalSongs());
+        LinearLayout.LayoutParams addParams = new LinearLayout.LayoutParams(-1, dp(48));
+        addParams.bottomMargin = dp(14);
+        content.addView(phoneAction, addParams);
+        phoneAction.setVisibility(View.GONE);
         rows = vertical(); content.addView(rows);
         scroll.addView(content);
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
         player = vertical();
         player.setPadding(dp(18), dp(15), dp(18), dp(14));
-        player.setBackground(background(CARD, 20));
+        player.setBackground(gradient(Color.rgb(61, 46, 42), CARD, 20));
         LinearLayout.LayoutParams playerParams = new LinearLayout.LayoutParams(-1, -2);
         playerParams.setMargins(dp(12), 0, dp(12), dp(12));
         root.addView(player, playerParams);
@@ -257,7 +313,17 @@ public final class MainActivity extends Activity {
         nowTitle = label("", 17, WHITE, true); nowTitle.setSingleLine(true);
         nowArtist = label("", 13, MUTED, false); nowArtist.setSingleLine(true);
         LinearLayout titleRow = new LinearLayout(this); titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        miniArtwork = new ImageView(this);
+        miniArtwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        miniArtwork.setBackground(gradient(Color.rgb(236, 123, 55), Color.rgb(95, 45, 37), 11));
+        miniArtwork.setClipToOutline(true);
+        LinearLayout.LayoutParams coverParams = new LinearLayout.LayoutParams(dp(52), dp(52));
+        coverParams.rightMargin = dp(10);
+        titleRow.addView(miniArtwork, coverParams);
+        miniArtwork.setOnClickListener(v -> expandPlayer());
         LinearLayout metadata = vertical(); metadata.addView(nowTitle); metadata.addView(nowArtist);
+        metadata.setOnClickListener(v -> expandPlayer());
+        metadata.setContentDescription("Open full player");
         titleRow.addView(metadata, new LinearLayout.LayoutParams(0, -2, 1));
         favoriteButton = button("♡", CARD);
         favoriteButton.setTextColor(ACCENT);
@@ -305,6 +371,134 @@ public final class MainActivity extends Activity {
         controls.addView(playButton, middle);
         controls.addView(next);
         player.addView(controls);
+        LinearLayout extras = new LinearLayout(this); extras.setGravity(Gravity.CENTER);
+        TextView back10 = label("↶ 10s", 14, ACCENT, true);
+        back10.setGravity(Gravity.CENTER); back10.setMinHeight(dp(44));
+        back10.setOnClickListener(v -> seekRelative(-10000));
+        extras.addView(back10, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView expand = label("Expand  ⌃", 13, WHITE, true);
+        expand.setGravity(Gravity.CENTER); expand.setMinHeight(dp(44));
+        expand.setOnClickListener(v -> expandPlayer());
+        extras.addView(expand, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView forward10 = label("10s ↷", 14, ACCENT, true);
+        forward10.setGravity(Gravity.CENTER); forward10.setMinHeight(dp(44));
+        forward10.setOnClickListener(v -> seekRelative(10000));
+        extras.addView(forward10, new LinearLayout.LayoutParams(0, -2, 1));
+        player.addView(extras);
+    }
+
+    private void seekRelative(int deltaMs) {
+        if (mediaPlayer == null) return;
+        try { mediaPlayer.seekTo(Math.max(0, Math.min(mediaPlayer.getDuration(), mediaPlayer.getCurrentPosition() + deltaMs))); }
+        catch (IllegalStateException ignored) { }
+    }
+
+    private String repeatLabel() {
+        return repeatMode == 2 ? "↻ One" : repeatMode == 1 ? "↻ Queue" : "↻ Off";
+    }
+
+    private void cycleRepeat() {
+        repeatMode = (repeatMode + 1) % 3;
+        getPreferences(MODE_PRIVATE).edit().putInt("repeat", repeatMode).apply();
+        if (expandedRepeat != null) expandedRepeat.setText(repeatLabel());
+    }
+
+    private void expandPlayer() {
+        if (current == null) return;
+        if (expanded != null && expanded.isShowing()) return;
+        expanded = new Dialog(this, android.R.style.Theme_Material_NoActionBar);
+        ScrollView screen = new ScrollView(this);
+        screen.setFillViewport(true);
+        LinearLayout content = vertical();
+        content.setPadding(dp(24), dp(24), dp(24), dp(28));
+        content.setBackground(gradient(Color.rgb(80, 42, 27), BG, 0));
+        screen.addView(content);
+        TextView close = label("⌄  NOW PLAYING", 15, WHITE, true);
+        close.setPadding(0, dp(4), 0, dp(22));
+        close.setOnClickListener(v -> expanded.dismiss());
+        content.addView(close);
+        expandedArtwork = new ImageView(this);
+        expandedArtwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        expandedArtwork.setClipToOutline(true);
+        expandedArtwork.setBackground(gradient(Color.rgb(236, 123, 55), Color.rgb(82, 40, 34), 24));
+        int side = Math.min(dp(350), getResources().getDisplayMetrics().widthPixels - dp(48));
+        LinearLayout.LayoutParams artParams = new LinearLayout.LayoutParams(side, side);
+        artParams.gravity = Gravity.CENTER_HORIZONTAL;
+        artParams.bottomMargin = dp(28);
+        content.addView(expandedArtwork, artParams);
+        expandedTitle = label(current.title, 27, WHITE, true);
+        expandedTitle.setMaxLines(2);
+        content.addView(expandedTitle);
+        expandedArtist = label(current.artist, 17, MUTED, false);
+        LinearLayout.LayoutParams artistParams = new LinearLayout.LayoutParams(-1, -2);
+        artistParams.topMargin = dp(6); artistParams.bottomMargin = dp(18);
+        content.addView(expandedArtist, artistParams);
+        expandedTimeline = new SeekBar(this);
+        expandedTimeline.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        expandedTimeline.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        expandedTimeline.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onStartTrackingTouch(SeekBar s) { userSeeking = true; }
+            public void onProgressChanged(SeekBar s, int value, boolean fromUser) {
+                if (fromUser && expandedTime != null) expandedTime.setText(clock(value) + " / " + total.getText());
+            }
+            public void onStopTrackingTouch(SeekBar s) {
+                try { if (mediaPlayer != null) mediaPlayer.seekTo(s.getProgress()); }
+                catch (IllegalStateException ignored) { }
+                userSeeking = false;
+            }
+        });
+        content.addView(expandedTimeline);
+        expandedTime = label("0:00 / 0:00", 13, MUTED, false);
+        content.addView(expandedTime);
+        LinearLayout controls = new LinearLayout(this); controls.setGravity(Gravity.CENTER);
+        TextView previous = button("|◀", CARD); previous.setOnClickListener(v -> skip(-1));
+        TextView rewind = button("↶10", CARD); rewind.setOnClickListener(v -> seekRelative(-10000));
+        expandedPlay = button("▶", ACCENT); expandedPlay.setTextColor(BG);
+        expandedPlay.setOnClickListener(v -> togglePlayback());
+        TextView forward = button("10↷", CARD); forward.setOnClickListener(v -> seekRelative(10000));
+        TextView next = button("▶|", CARD); next.setOnClickListener(v -> skip(1));
+        for (TextView control : new TextView[]{previous,rewind,expandedPlay,forward,next}) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(52), 1);
+            lp.setMargins(dp(3), 0, dp(3), 0);
+            controls.addView(control, lp);
+        }
+        LinearLayout.LayoutParams controlsParams = new LinearLayout.LayoutParams(-1, -2);
+        controlsParams.topMargin = dp(17); controlsParams.bottomMargin = dp(14);
+        content.addView(controls, controlsParams);
+        LinearLayout actions = new LinearLayout(this); actions.setGravity(Gravity.CENTER);
+        expandedRepeat = button(repeatLabel(), CARD);
+        expandedRepeat.setTextSize(14);
+        expandedRepeat.setOnClickListener(v -> cycleRepeat());
+        actions.addView(expandedRepeat, new LinearLayout.LayoutParams(0, dp(48), 1));
+        TextView add = button("+ Playlist", CARD); add.setTextSize(14);
+        add.setOnClickListener(v -> { if (current != null) choosePlaylist(current); });
+        actions.addView(add, new LinearLayout.LayoutParams(0, dp(48), 1));
+        TextView download = button("↓ Download", CARD); download.setTextSize(14);
+        download.setOnClickListener(v -> { if (current != null) downloadTrack(current, download); });
+        actions.addView(download, new LinearLayout.LayoutParams(0, dp(48), 1));
+        content.addView(actions);
+        TextView source = label("Music provided by Audius. Downloads require artist permission.", 12, MUTED, false);
+        source.setPadding(0, dp(17), 0, 0); content.addView(source);
+        expanded.setContentView(screen);
+        expanded.setOnDismissListener(v -> { expandedArtwork = null; expandedTitle = null; expandedArtist = null;
+            expandedPlay = null; expandedTime = null; expandedRepeat = null; expandedTimeline = null; expanded = null; });
+        Window window = expanded.getWindow();
+        if (window != null) window.setLayout(-1, -1);
+        expanded.show();
+        if (expanded.getWindow() != null) expanded.getWindow().setLayout(-1, -1);
+        updateExpanded();
+    }
+
+    private void updateExpanded() {
+        if (expanded == null || !expanded.isShowing() || current == null) return;
+        expandedTitle.setText(current.title);
+        expandedArtist.setText(current.artist + (current.details.isEmpty() ? "" : "  •  " + current.details));
+        expandedPlay.setText(playButton.getText());
+        expandedTimeline.setMax(timeline.getMax());
+        expandedTimeline.setProgress(timeline.getProgress());
+        expandedTime.setText(elapsed.getText() + " / " + total.getText());
+        expandedArtwork.setImageDrawable(null);
+        showArtwork(current, expandedArtwork);
     }
 
     private String clock(int ms) {
@@ -313,7 +507,8 @@ public final class MainActivity extends Activity {
     }
 
     private void loadTracks(String query) {
-        showingFavorites = false; showingDownloads = false; selectedPlaylist = null;
+        showingFavorites = false; showingDownloads = false; showingLocal = false; selectedPlaylist = null;
+        phoneAction.setVisibility(View.GONE);
         if (savedTab != null) savedTab.setTextColor(MUTED);
         int version = ++requestVersion;
         sectionTitle.setText(query.isEmpty() ? language + " music" : "Search results");
@@ -333,6 +528,8 @@ public final class MainActivity extends Activity {
                     if (!language.equals("All") && !query.toLowerCase(Locale.ROOT).contains(language.toLowerCase(Locale.ROOT)))
                         terms.add(query + " " + language);
                     if (query.contains(" ")) terms.add(query.substring(0, query.lastIndexOf(' ')));
+                    String compact = query.replaceAll("[^\\p{L}\\p{N} ]", " ").replaceAll("\\s+", " ").trim();
+                    if (!compact.isEmpty() && !compact.equalsIgnoreCase(query) && !terms.contains(compact)) terms.add(compact);
                 }
                 Exception failure = null;
                 for (String term : terms) {
@@ -340,9 +537,12 @@ public final class MainActivity extends Activity {
                     try { fetchTracks("/search?query=" + URLEncoder.encode(term, "UTF-8") + "&sort_method=relevant&limit=40", found); }
                     catch (Exception error) { failure = error; }
                 }
+                if (!query.isEmpty()) for (Track own : localTracks.values())
+                    if (score(own, query) > 0) found.put(own.id, own);
                 if (found.isEmpty() && failure != null) throw failure;
                 List<Track> tracks = new ArrayList<>(found.values());
                 if (!query.isEmpty()) {
+                    tracks.removeIf(track -> score(track, query) <= 0);
                     // Preserve source order for ties, but put exact song names before remixes and loose matches.
                     Collections.sort(tracks, (a, b) -> Integer.compare(score(b, query), score(a, query)));
                 }
@@ -350,7 +550,9 @@ public final class MainActivity extends Activity {
                 List<Track> result = tracks;
                 main.post(() -> {
                     if (version != requestVersion || showingFavorites || isFinishing()) return;
-                    message.setText(result.isEmpty() ? "No songs found on Audius. Try artist name or another spelling." : "Songs available on Audius • exact titles first");
+                    message.setText(result.isEmpty() ? "Not in this catalog. Tap here to add music you own on your phone."
+                            : "Search title, singer and any film or writer names supplied by artists • long press a song for details");
+                    message.setOnClickListener(result.isEmpty() ? v -> pickLocalSongs() : null);
                     showTracks(result);
                 });
             } catch (Exception error) {
@@ -364,15 +566,22 @@ public final class MainActivity extends Activity {
     }
 
     private int score(Track track, String query) {
-        String title = track.title.toLowerCase(Locale.ROOT), artist = track.artist.toLowerCase(Locale.ROOT);
-        String needle = query.toLowerCase(Locale.ROOT).trim();
+        String title = normalize(track.title), artist = normalize(track.artist), hints = normalize(track.searchHints);
+        String needle = normalize(query);
         int score = title.equals(needle) ? 1000 : title.startsWith(needle) ? 700 : title.contains(needle) ? 500 : 0;
         if (artist.equals(needle)) score += 550;
         else if (artist.contains(needle)) score += 180;
+        if (hints.contains(needle)) score += 250;
         for (String word : needle.split("\\s+")) if (word.length() > 2 && title.contains(word)) score += 30;
+        for (String word : needle.split("\\s+")) if (word.length() > 2 && hints.contains(word)) score += 10;
         if (!language.equals("All") && (title + " " + artist).toLowerCase(Locale.ROOT).contains(language.toLowerCase(Locale.ROOT))) score += 15;
         if (language.equals("Telugu") && title.matches(".*[\\u0C00-\\u0C7F].*")) score += 15;
         return score;
+    }
+
+    private String normalize(String value) {
+        return Normalizer.normalize(value, Normalizer.Form.NFKC).toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{L}\\p{N}]+", " ").trim();
     }
 
     private void fetchTracks(String endpoint, Map<String, Track> found) throws Exception {
@@ -386,11 +595,15 @@ public final class MainActivity extends Activity {
             String id = item.optString("id");
             if (id.isEmpty()) continue;
             JSONObject user = item.optJSONObject("user"), artwork = item.optJSONObject("artwork");
+            String album = item.optString("album_name", item.optString("albumName", ""));
+            String hints = album + " " + item.optString("tags", "") + " " + item.optString("description", "")
+                    + " " + item.optString("genre", "") + " " + item.optString("mood", "");
             boolean canDownload = (item.optBoolean("downloadable") || item.optBoolean("is_downloadable"))
                     && item.isNull("download_conditions") && item.isNull("downloadConditions");
             found.putIfAbsent(id, new Track(id, item.optString("title", "Untitled"),
                     user == null ? "Unknown artist" : user.optString("name", "Unknown artist"),
-                    artwork == null ? "" : artwork.optString("480x480", artwork.optString("_480x480", "")), canDownload));
+                    artwork == null ? "" : artwork.optString("480x480", artwork.optString("_480x480", "")), canDownload,
+                    album, hints));
         }
     }
 
@@ -426,11 +639,11 @@ public final class MainActivity extends Activity {
             LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(-1, dp(78));
             rowParams.bottomMargin = dp(9);
             ImageView artwork = new ImageView(this);
-            artwork.setBackground(background(Color.rgb(73, 52, 105), 10));
+            artwork.setBackground(gradient(Color.rgb(230, 116, 49), Color.rgb(94, 46, 35), 10));
             artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
             artwork.setClipToOutline(true);
             row.addView(artwork, new LinearLayout.LayoutParams(dp(57), dp(57)));
-            loadArtwork(track.artwork, artwork);
+            showArtwork(track, artwork);
             LinearLayout labels = vertical();
             labels.setPadding(dp(12), 0, dp(5), 0);
             TextView title = label(track.title, 15, WHITE, true);
@@ -444,18 +657,49 @@ public final class MainActivity extends Activity {
             add.setContentDescription("Add " + track.title + " to playlist");
             row.addView(add, new LinearLayout.LayoutParams(dp(39), dp(48)));
             add.setOnClickListener(v -> choosePlaylist(track));
-            if (track.downloadable || downloads.containsKey(track.id)) {
-                TextView download = label(downloads.containsKey(track.id) ? "✓" : "↓", 23, ACCENT, true);
-                download.setGravity(Gravity.CENTER);
-                download.setContentDescription(downloads.containsKey(track.id) ? "Saved offline" : "Download " + track.title);
-                row.addView(download, new LinearLayout.LayoutParams(dp(39), dp(48)));
-                download.setOnClickListener(v -> downloadTrack(track, download));
-            }
+            TextView download = label(track.isLocal() || downloads.containsKey(track.id) ? "✓" : "↓", 23,
+                    track.isLocal() || track.downloadable || downloads.containsKey(track.id) ? ACCENT : MUTED, true);
+            download.setGravity(Gravity.CENTER);
+            download.setContentDescription(track.isLocal() ? "On this phone" : track.downloadable ? "Download " + track.title :
+                    "Download unavailable; artist has not enabled it");
+            row.addView(download, new LinearLayout.LayoutParams(dp(39), dp(48)));
+            download.setOnClickListener(v -> downloadTrack(track, download));
             TextView arrow = label("▶", 17, ACCENT, true);
             arrow.setPadding(dp(8), 0, dp(7), 0); row.addView(arrow);
             row.setOnClickListener(v -> play(track, index));
+            row.setOnLongClickListener(v -> {
+                new AlertDialog.Builder(this).setTitle(track.title)
+                        .setMessage(track.artist + (track.details.isEmpty() ? "" : "\n" + track.details) +
+                                "\n" + (track.isLocal() ? "On your phone" : "On Audius") +
+                                "\nDownload: " + (track.isLocal() ? "Already on phone" : track.downloadable ? "Artist enabled" : "Not enabled by artist"))
+                        .setPositiveButton("OK", null).show();
+                return true;
+            });
             rows.addView(row, rowParams);
         }
+    }
+
+    private void showArtwork(Track track, ImageView view) {
+        view.setImageResource(R.drawable.ic_melody);
+        if (track.isLocal()) {
+            String id = track.id;
+            if (artworkCache.containsKey(id)) { view.setImageBitmap(artworkCache.get(id)); return; }
+            view.setTag(id);
+            images.execute(() -> {
+                MediaMetadataRetriever metadata = new MediaMetadataRetriever();
+                try {
+                    metadata.setDataSource(this, Uri.parse(id.substring(6)));
+                    byte[] art = metadata.getEmbeddedPicture();
+                    if (art == null || art.length > 3_000_000) return;
+                    Bitmap bitmap = BitmapFactory.decodeByteArray(art, 0, art.length);
+                    if (bitmap != null) main.post(() -> {
+                        artworkCache.put(id, bitmap);
+                        if (!isFinishing() && id.equals(view.getTag())) view.setImageBitmap(bitmap);
+                    });
+                } catch (Exception ignored) { }
+                finally { try { metadata.release(); } catch (Exception ignored) { } }
+            });
+        } else loadArtwork(track.artwork, view);
     }
 
     private void loadArtwork(String url, ImageView view) {
@@ -486,8 +730,10 @@ public final class MainActivity extends Activity {
         int version = ++playVersion;
         player.setVisibility(View.VISIBLE);
         nowTitle.setText(track.title); nowArtist.setText("Connecting • " + track.artist);
+        showArtwork(track, miniArtwork);
         playButton.setText("…"); elapsed.setText("0:00"); total.setText("0:00");
         timeline.setProgress(0); timeline.setMax(1);
+        updateExpanded();
         updateFavoriteButton();
         try {
             MediaPlayer next = new MediaPlayer();
@@ -499,20 +745,36 @@ public final class MainActivity extends Activity {
                 timeline.setMax(Math.max(1, mp.getDuration()));
                 total.setText(clock(mp.getDuration()));
                 applyEffects(mp);
-                mp.start(); playButton.setText("Ⅱ");
+                consecutiveErrors = 0;
+                mp.start(); playButton.setText("Ⅱ"); updateExpanded();
             });
-            next.setOnCompletionListener(mp -> { if (version == playVersion) skip(1); });
+            next.setOnCompletionListener(mp -> {
+                if (version != playVersion) return;
+                if (repeatMode == 2) {
+                    try { mp.seekTo(0); mp.start(); playButton.setText("Ⅱ"); updateExpanded(); }
+                    catch (IllegalStateException ignored) { }
+                } else if (repeatMode == 1 || currentIndex < playQueue.size() - 1) skip(1);
+                else { playButton.setText("▶"); updateExpanded(); }
+            });
             next.setOnErrorListener((mp, what, extra) -> {
-                if (version == playVersion) { nowArtist.setText("Can't play this track. Choose another."); playButton.setText("▶"); }
+                if (version == playVersion) {
+                    nowArtist.setText("Track unavailable • trying next song"); playButton.setText("▶");
+                    if (++consecutiveErrors < playQueue.size()) main.post(() -> { if (version == playVersion) skip(1); });
+                    else { nowArtist.setText("No playable songs in this list"); updateExpanded(); }
+                }
                 return true;
             });
             mediaPlayer = next;
-            File offline = offlineFile(track.id);
-            next.setDataSource(offline.isFile() && offline.length() > 0 ? offline.getAbsolutePath() :
-                    API + "/" + URLEncoder.encode(track.id, "UTF-8") + "/stream?app_name=Melody");
+            if (track.isLocal()) next.setDataSource(this, Uri.parse(track.id.substring(6)));
+            else {
+                File offline = offlineFile(track.id);
+                next.setDataSource(offline.isFile() && offline.length() > 0 ? offline.getAbsolutePath() :
+                        API + "/" + URLEncoder.encode(track.id, "UTF-8") + "/stream?app_name=Melody");
+            }
             next.prepareAsync();
         } catch (Exception e) {
             nowArtist.setText("Can't play this track. Choose another."); playButton.setText("▶");
+            if (++consecutiveErrors < playQueue.size()) main.post(() -> skip(1));
         }
     }
 
@@ -531,6 +793,7 @@ public final class MainActivity extends Activity {
         try {
             if (mediaPlayer.isPlaying()) { mediaPlayer.pause(); playButton.setText("▶"); }
             else { mediaPlayer.start(); playButton.setText("Ⅱ"); }
+            updateExpanded();
         } catch (IllegalStateException ignored) { }
     }
 
@@ -545,7 +808,12 @@ public final class MainActivity extends Activity {
 
     private void updateProgress() {
         if (mediaPlayer != null && !userSeeking) {
-            try { int position = mediaPlayer.getCurrentPosition(); timeline.setProgress(position); elapsed.setText(clock(position)); }
+            try { int position = mediaPlayer.getCurrentPosition(); timeline.setProgress(position); elapsed.setText(clock(position));
+                if (expanded != null && expanded.isShowing() && expandedTimeline != null) {
+                    expandedTimeline.setMax(timeline.getMax()); expandedTimeline.setProgress(position);
+                    expandedTime.setText(clock(position) + " / " + total.getText());
+                }
+            }
             catch (IllegalStateException ignored) { }
         }
         main.postDelayed(this::updateProgress, 500);
@@ -571,7 +839,90 @@ public final class MainActivity extends Activity {
 
     private Track savedTrack(JSONObject item) {
         return new Track(item.optString("id"), item.optString("title"), item.optString("artist"),
-                item.optString("artwork"), item.optBoolean("downloadable"));
+                item.optString("artwork"), item.optBoolean("downloadable"), item.optString("details"),
+                item.optString("searchHints", item.optString("details")));
+    }
+
+    private void loadLocalSongs() {
+        try {
+            JSONArray data = new JSONArray(getPreferences(MODE_PRIVATE).getString("local_tracks", "[]"));
+            for (int i = 0; i < data.length(); i++) {
+                Track track = savedTrack(data.getJSONObject(i));
+                if (track.isLocal()) localTracks.put(track.id, track);
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private void saveLocalSongs() {
+        JSONArray data = new JSONArray();
+        for (Track track : localTracks.values()) data.put(track.json());
+        getPreferences(MODE_PRIVATE).edit().putString("local_tracks", data.toString()).apply();
+    }
+
+    private void showLocalSongs() {
+        showingLocal = true; showingDownloads = false; showingFavorites = false; selectedPlaylist = null; requestVersion++;
+        phoneAction.setVisibility(View.VISIBLE);
+        sectionTitle.setText("Music on your phone");
+        message.setText(localTracks.isEmpty() ? "Add audio you own, including old Telugu film songs."
+                : "Your files stay on your phone • search can use embedded film, singer and composer tags");
+        savedTab.setTextColor(MUTED);
+        showTracks(new ArrayList<>(localTracks.values()));
+        for (int i = 0; i < rows.getChildCount(); i++) {
+            Track track = visibleTracks.get(i);
+            rows.getChildAt(i).setOnLongClickListener(v -> {
+                new AlertDialog.Builder(this).setMessage("Remove " + track.title + " from Melody? The original audio file stays on your phone.")
+                        .setNegativeButton("Cancel", null).setPositiveButton("Remove", (dialog, which) -> {
+                            localTracks.remove(track.id); saveLocalSongs(); showLocalSongs();
+                        }).show();
+                return true;
+            });
+        }
+    }
+
+    private void pickLocalSongs() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("audio/*");
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent, PICK_AUDIO);
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_AUDIO || resultCode != RESULT_OK || data == null) return;
+        List<Uri> selected = new ArrayList<>();
+        if (data.getData() != null) selected.add(data.getData());
+        ClipData clip = data.getClipData();
+        if (clip != null) for (int i = 0; i < clip.getItemCount(); i++) selected.add(clip.getItemAt(i).getUri());
+        for (Uri uri : selected) {
+            try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); }
+            catch (SecurityException ignored) { }
+            work.execute(() -> {
+                MediaMetadataRetriever metadata = new MediaMetadataRetriever();
+                try {
+                    metadata.setDataSource(this, uri);
+                    String title = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
+                    String artist = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST);
+                    String album = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM);
+                    String composer = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_COMPOSER);
+                    String author = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_AUTHOR);
+                    String genre = metadata.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE);
+                    if (title == null || title.trim().isEmpty()) title = "Audio on phone";
+                    if (artist == null || artist.trim().isEmpty()) artist = "Unknown singer";
+                    String details = album == null ? "" : album;
+                    String hints = details + " " + (composer == null ? "" : composer) + " " +
+                            (author == null ? "" : author) + " " + (genre == null ? "" : genre);
+                    Track track = new Track("local:" + uri, title, artist, "", false, details, hints);
+                    main.post(() -> {
+                        localTracks.put(track.id, track); saveLocalSongs();
+                        if (showingLocal) showLocalSongs();
+                    });
+                } catch (Exception failure) { main.post(() -> toast("Couldn't read an audio file")); }
+                finally { try { metadata.release(); } catch (Exception ignored) { } }
+            });
+        }
+        showLocalSongs();
     }
 
     private void loadCollections() {
@@ -649,7 +1000,8 @@ public final class MainActivity extends Activity {
     }
 
     private void showPlaylist(String name) {
-        selectedPlaylist = name; showingFavorites = false; showingDownloads = false; requestVersion++;
+        selectedPlaylist = name; showingFavorites = false; showingDownloads = false; showingLocal = false; requestVersion++;
+        phoneAction.setVisibility(View.GONE);
         sectionTitle.setText(name);
         message.setText("Saved on this phone • long press a song to remove it");
         showTracks(new ArrayList<>(playlists.get(name)));
@@ -674,7 +1026,8 @@ public final class MainActivity extends Activity {
     }
 
     private void showDownloads() {
-        showingDownloads = true; showingFavorites = false; selectedPlaylist = null; requestVersion++;
+        showingDownloads = true; showingFavorites = false; showingLocal = false; selectedPlaylist = null; requestVersion++;
+        phoneAction.setVisibility(View.GONE);
         sectionTitle.setText("Offline songs");
         message.setText(downloads.isEmpty() ? "Songs with artist enabled downloads appear here." :
                 "Stored privately on this phone • long press to delete");
@@ -693,8 +1046,9 @@ public final class MainActivity extends Activity {
     }
 
     private void downloadTrack(Track track, TextView button) {
+        if (track.isLocal()) { toast("This song is already on your phone"); return; }
         if (downloads.containsKey(track.id)) { toast("Already saved offline"); return; }
-        if (!track.downloadable) { toast("Artist did not enable downloads"); return; }
+        if (!track.downloadable) { toast("This artist has not enabled downloads for the song"); return; }
         button.setText("…");
         work.execute(() -> {
             File output = offlineFile(track.id), temp = new File(output.getPath() + ".part");
@@ -794,6 +1148,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         main.removeCallbacksAndMessages(null);
+        if (expanded != null) expanded.dismiss();
         stopPlayer();
         work.shutdownNow();
         images.shutdownNow();
