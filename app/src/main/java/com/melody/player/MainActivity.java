@@ -136,7 +136,7 @@ public final class MainActivity extends Activity {
         repeatMode = getPreferences(MODE_PRIVATE).getInt("repeat", 1);
         shuffleEnabled = getPreferences(MODE_PRIVATE).getBoolean("shuffle", false);
         drawScreen();
-        loadTracks("");
+        showDiscover();
         main.postDelayed(this::updateProgress, 500);
     }
 
@@ -224,7 +224,8 @@ public final class MainActivity extends Activity {
                     TextView item = (TextView) languages.getChildAt(i);
                     item.setTextColor(item == chip ? ACCENT : MUTED);
                 }
-                loadTracks(search.getText().toString().trim());
+                String query = search.getText().toString().trim();
+                if (query.isEmpty()) showDiscover(); else loadTracks(query);
             });
         }
         root.addView(languages);
@@ -233,7 +234,7 @@ public final class MainActivity extends Activity {
             public void onTextChanged(CharSequence s, int start, int before, int count) {
                 String query = s.toString().trim();
                 if (searchTask != null) main.removeCallbacks(searchTask);
-                searchTask = () -> loadTracks(query);
+                searchTask = query.isEmpty() ? this::showDiscover : () -> loadTracks(query);
                 main.postDelayed(searchTask, query.isEmpty() ? 0 : 400);
             }
             public void afterTextChanged(Editable e) { }
@@ -247,7 +248,8 @@ public final class MainActivity extends Activity {
             showingFavorites = false; showingDownloads = false; selectedPlaylist = null;
             discover.setTextColor(ACCENT);
             savedTab.setTextColor(MUTED);
-            loadTracks(search.getText().toString().trim());
+            if (search.length() > 0) search.setText("");
+            else showDiscover();
         });
         tabs.addView(discover);
         TextView saved = label("♥  Favorites", 17, MUTED, true);
@@ -288,13 +290,13 @@ public final class MainActivity extends Activity {
         scroll.setFillViewport(true);
         LinearLayout content = vertical();
         content.setPadding(dp(22), dp(10), dp(22), dp(16));
-        sectionTitle = label("Trending now", 23, WHITE, true);
+        sectionTitle = label("Discover", 25, WHITE, true);
         content.addView(sectionTitle);
-        message = label("Loading tracks…", 13, MUTED, false);
+        message = label("Finding music on Audius…", 13, MUTED, false);
         LinearLayout.LayoutParams info = new LinearLayout.LayoutParams(-1, -2);
         info.topMargin = dp(7); info.bottomMargin = dp(15);
         content.addView(message, info);
-        phoneAction = button("＋  Add audio files from your phone", Color.rgb(88, 53, 35));
+        phoneAction = button("＋  Add downloaded audio from your phone", Color.rgb(88, 53, 35));
         phoneAction.setTextSize(14);
         phoneAction.setOnClickListener(v -> pickLocalSongs());
         LinearLayout.LayoutParams addParams = new LinearLayout.LayoutParams(-1, dp(48));
@@ -534,7 +536,147 @@ public final class MainActivity extends Activity {
         return (seconds / 60) + ":" + String.format(java.util.Locale.US, "%02d", seconds % 60);
     }
 
+    private void showDiscover() {
+        showingFavorites = false; showingDownloads = false; showingLocal = false;
+        showingRecent = false; selectedPlaylist = null;
+        if (savedTab != null) savedTab.setTextColor(MUTED);
+        int version = ++requestVersion;
+        sectionTitle.setText("Discover");
+        message.setText("Popular and new uploads on Audius • updated when you open Discover");
+        message.setOnClickListener(null);
+        phoneAction.setVisibility(View.VISIBLE);
+        rows.removeAllViews();
+
+        LinearLayout welcome = vertical();
+        welcome.setPadding(dp(18), dp(17), dp(18), dp(17));
+        welcome.setBackground(gradient(Color.rgb(138, 69, 33), Color.rgb(57, 43, 42), 18));
+        welcome.addView(label("♪  Find your next song", 19, WHITE, true));
+        TextView hint = label("Discover new uploads, or add Telugu songs already saved on your phone.", 13, WHITE, false);
+        LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(-1, -2);
+        hintParams.topMargin = dp(8);
+        welcome.addView(hint, hintParams);
+        TextView refresh = label("↻  Refresh new uploads", 13, WHITE, true);
+        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(-1, -2);
+        refreshParams.topMargin = dp(14);
+        welcome.addView(refresh, refreshParams);
+        refresh.setOnClickListener(v -> showDiscover());
+        LinearLayout.LayoutParams welcomeParams = new LinearLayout.LayoutParams(-1, -2);
+        welcomeParams.bottomMargin = dp(20);
+        rows.addView(welcome, welcomeParams);
+        TextView loading = label("Loading music…", 15, MUTED, false);
+        rows.addView(loading);
+
+        String chosenLanguage = language;
+        work.execute(() -> {
+            LinkedHashMap<String, Track> popular = new LinkedHashMap<>();
+            LinkedHashMap<String, Track> latest = new LinkedHashMap<>();
+            LinkedHashMap<String, Track> downloadable = new LinkedHashMap<>();
+            String term = chosenLanguage.equals("All") ? "" : URLEncoder.encode(chosenLanguage, "UTF-8");
+            try { fetchTracks(chosenLanguage.equals("All") ? "/trending?time=week&limit=25" :
+                    "/search?query=" + term + "&sort_method=popular&limit=25", popular); }
+            catch (Exception ignored) { /* Other shelves may still load. */ }
+            if (version != requestVersion) return;
+            try { fetchTracks(chosenLanguage.equals("All") ? "/latest?limit=25" :
+                    "/search?query=" + term + "&sort_method=recent&limit=25", latest); }
+            catch (Exception ignored) { /* Other shelves may still load. */ }
+            if (version != requestVersion) return;
+            try {
+                String term = URLEncoder.encode(chosenLanguage.equals("All") ? "music" : chosenLanguage, "UTF-8");
+                fetchTracks("/search?query=" + term + "&sort_method=popular&only_downloadable=true&limit=25", downloadable);
+            } catch (Exception ignored) { /* Older Audius hosts may not support the filter. */ }
+            for (Track track : popular.values()) if (track.downloadable) downloadable.putIfAbsent(track.id, track);
+            for (Track track : latest.values()) if (track.downloadable) downloadable.putIfAbsent(track.id, track);
+            List<Track> popularList = new ArrayList<>(popular.values());
+            List<Track> latestList = new ArrayList<>(latest.values());
+            List<Track> downloadList = new ArrayList<>();
+            for (Track track : downloadable.values()) if (track.downloadable) downloadList.add(track);
+            main.post(() -> {
+                if (version != requestVersion || isFinishing()) return;
+                rows.removeView(loading);
+                addDiscoverShelf(chosenLanguage.equals("All") ? "Trending on Audius" : "Popular " + chosenLanguage + " on Audius", popularList);
+                addDiscoverShelf(chosenLanguage.equals("All") ? "New on Audius" : "New " + chosenLanguage + " uploads", latestList);
+                addDiscoverShelf("Available to download", downloadList);
+                if (downloadList.isEmpty()) {
+                    TextView unavailable = label("No artist-enabled downloads found in these " + chosenLanguage + " results. Try All, or import an audio file you already have.", 13, MUTED, false);
+                    LinearLayout.LayoutParams unavailableParams = new LinearLayout.LayoutParams(-1, -2);
+                    unavailableParams.bottomMargin = dp(16);
+                    rows.addView(unavailable, unavailableParams);
+                }
+                TextView note = label("Only songs whose artists enable downloads can be saved offline. You can also add audio files already on your phone.", 12, MUTED, false);
+                rows.addView(note);
+                if (popularList.isEmpty() && latestList.isEmpty()) {
+                    TextView empty = label("Couldn't find tracks here. Check your internet, try another language, or add your audio files above.", 14, MUTED, false);
+                    rows.addView(empty);
+                    message.setText("Tap here to retry discovery");
+                    message.setOnClickListener(v -> showDiscover());
+                }
+            });
+        });
+    }
+
+    private void addDiscoverShelf(String title, List<Track> tracks) {
+        if (tracks.isEmpty()) return;
+        List<Track> shelf = new ArrayList<>(tracks.subList(0, Math.min(12, tracks.size())));
+        LinearLayout heading = new LinearLayout(this);
+        heading.setGravity(Gravity.CENTER_VERTICAL);
+        TextView headingText = label(title, 19, WHITE, true);
+        heading.addView(headingText, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView all = label("See all  ›", 13, ACCENT, true);
+        all.setPadding(dp(8), dp(14), 0, dp(14));
+        all.setOnClickListener(v -> {
+            requestVersion++;
+            sectionTitle.setText(title);
+            message.setText("Songs provided by Audius • downloads require artist permission");
+            message.setOnClickListener(null);
+            phoneAction.setVisibility(View.GONE);
+            showTracks(tracks);
+        });
+        heading.addView(all);
+        rows.addView(heading);
+        LinearLayout cards = new LinearLayout(this);
+        for (int i = 0; i < shelf.size(); i++) {
+            Track track = shelf.get(i);
+            int index = i;
+            LinearLayout card = vertical();
+            card.setPadding(dp(8), dp(8), dp(8), dp(10));
+            card.setBackground(background(CARD, 15));
+            ImageView cover = new ImageView(this);
+            cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            cover.setClipToOutline(true);
+            cover.setBackground(gradient(Color.rgb(232, 115, 44), Color.rgb(82, 43, 35), 12));
+            card.addView(cover, new LinearLayout.LayoutParams(dp(150), dp(150)));
+            showArtwork(track, cover);
+            TextView song = label(track.title, 14, WHITE, true);
+            song.setSingleLine(true); song.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams songParams = new LinearLayout.LayoutParams(-1, -2);
+            songParams.topMargin = dp(7);
+            card.addView(song, songParams);
+            TextView artist = label(track.artist, 12, MUTED, false);
+            artist.setSingleLine(true); artist.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            card.addView(artist);
+            TextView download = label(track.downloadable ? "↓  Download" : "Stream only", 12,
+                    track.downloadable ? ACCENT : MUTED, true);
+            download.setPadding(0, dp(8), 0, dp(4));
+            card.addView(download);
+            download.setOnClickListener(v -> downloadTrack(track, download));
+            card.setOnClickListener(v -> {
+                visibleTracks.clear(); visibleTracks.addAll(shelf);
+                play(track, index);
+            });
+            LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(dp(166), -2);
+            cardParams.rightMargin = dp(10);
+            cards.addView(card, cardParams);
+        }
+        HorizontalScrollView carousel = new HorizontalScrollView(this);
+        carousel.setHorizontalScrollBarEnabled(false);
+        carousel.addView(cards);
+        LinearLayout.LayoutParams shelfParams = new LinearLayout.LayoutParams(-1, -2);
+        shelfParams.bottomMargin = dp(21);
+        rows.addView(carousel, shelfParams);
+    }
+
     private void loadTracks(String query) {
+        if (query.isEmpty()) { showDiscover(); return; }
         showingFavorites = false; showingDownloads = false; showingLocal = false; showingRecent = false; selectedPlaylist = null;
         phoneAction.setVisibility(View.GONE);
         if (savedTab != null) savedTab.setTextColor(MUTED);
