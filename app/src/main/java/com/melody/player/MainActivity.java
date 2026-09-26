@@ -234,7 +234,7 @@ public final class MainActivity extends Activity {
             public void onTextChanged(CharSequence s, int start, int before, int count) {
                 String query = s.toString().trim();
                 if (searchTask != null) main.removeCallbacks(searchTask);
-                searchTask = query.isEmpty() ? this::showDiscover : () -> loadTracks(query);
+                searchTask = query.isEmpty() ? () -> showDiscover() : () -> loadTracks(query);
                 main.postDelayed(searchTask, query.isEmpty() ? 0 : 400);
             }
             public void afterTextChanged(Editable e) { }
@@ -581,8 +581,8 @@ public final class MainActivity extends Activity {
             catch (Exception ignored) { /* Other shelves may still load. */ }
             if (version != requestVersion) return;
             try {
-                String term = URLEncoder.encode(chosenLanguage.equals("All") ? "music" : chosenLanguage, "UTF-8");
-                fetchTracks("/search?query=" + term + "&sort_method=popular&only_downloadable=true&limit=25", downloadable);
+                String downloadQuery = URLEncoder.encode(chosenLanguage.equals("All") ? "music" : chosenLanguage, "UTF-8");
+                fetchTracks("/search?query=" + downloadQuery + "&sort_method=popular&only_downloadable=true&limit=25", downloadable);
             } catch (Exception ignored) { /* Older Audius hosts may not support the filter. */ }
             for (Track track : popular.values()) if (track.downloadable) downloadable.putIfAbsent(track.id, track);
             for (Track track : latest.values()) if (track.downloadable) downloadable.putIfAbsent(track.id, track);
