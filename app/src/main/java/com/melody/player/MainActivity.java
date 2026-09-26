@@ -571,7 +571,7 @@ public final class MainActivity extends Activity {
             LinkedHashMap<String, Track> popular = new LinkedHashMap<>();
             LinkedHashMap<String, Track> latest = new LinkedHashMap<>();
             LinkedHashMap<String, Track> downloadable = new LinkedHashMap<>();
-            String term = chosenLanguage.equals("All") ? "" : URLEncoder.encode(chosenLanguage, "UTF-8");
+            String term = chosenLanguage.equals("All") ? "" : chosenLanguage;
             try { fetchTracks(chosenLanguage.equals("All") ? "/trending?time=week&limit=25" :
                     "/search?query=" + term + "&sort_method=popular&limit=25", popular); }
             catch (Exception ignored) { /* Other shelves may still load. */ }
