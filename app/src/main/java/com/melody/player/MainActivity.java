@@ -68,6 +68,7 @@ public final class MainActivity extends Activity {
     private final Map<String, Track> favorites = new LinkedHashMap<>();
     private final Map<String, Track> downloads = new LinkedHashMap<>();
     private final Map<String, Track> localTracks = new LinkedHashMap<>();
+    private final Map<String, Track> recentTracks = new LinkedHashMap<>();
     private final Map<String, List<Track>> playlists = new LinkedHashMap<>();
     private final List<Track> visibleTracks = new ArrayList<>();
     private final List<Track> playQueue = new ArrayList<>();
@@ -87,9 +88,11 @@ public final class MainActivity extends Activity {
     private boolean showingLocal = false;
     private Dialog expanded;
     private ImageView miniArtwork, expandedArtwork;
-    private TextView expandedTitle, expandedArtist, expandedPlay, expandedTime, expandedRepeat;
+    private TextView expandedTitle, expandedArtist, expandedPlay, expandedTime, expandedRepeat, expandedShuffle;
     private SeekBar expandedTimeline;
     private int repeatMode = 1; // 0 stops at the end, 1 continues the queue, 2 repeats this song.
+    private boolean shuffleEnabled;
+    private boolean showingRecent;
     private int consecutiveErrors;
     private Track current;
     private int currentIndex = -1;
@@ -127,9 +130,11 @@ public final class MainActivity extends Activity {
         loadFavorites();
         loadCollections();
         loadLocalSongs();
+        loadRecent();
         bassLevel = getPreferences(MODE_PRIVATE).getInt("bass", 0);
         eqPreset = getPreferences(MODE_PRIVATE).getInt("eqPreset", 0);
         repeatMode = getPreferences(MODE_PRIVATE).getInt("repeat", 1);
+        shuffleEnabled = getPreferences(MODE_PRIVATE).getBoolean("shuffle", false);
         drawScreen();
         loadTracks("");
         main.postDelayed(this::updateProgress, 500);
@@ -249,7 +254,7 @@ public final class MainActivity extends Activity {
         savedTab = saved;
         saved.setPadding(0, dp(8), 0, dp(8));
         saved.setOnClickListener(v -> {
-            showingFavorites = true; showingDownloads = false; showingLocal = false; selectedPlaylist = null;
+            showingFavorites = true; showingDownloads = false; showingLocal = false; showingRecent = false; selectedPlaylist = null;
             phoneAction.setVisibility(View.GONE);
             requestVersion++;
             sectionTitle.setText("Your favorites");
@@ -270,6 +275,10 @@ public final class MainActivity extends Activity {
         phoneTab.setPadding(dp(12), dp(8), dp(12), dp(8));
         phoneTab.setOnClickListener(v -> showLocalSongs());
         tabs.addView(phoneTab);
+        TextView recentTab = label("Recent", 16, MUTED, true);
+        recentTab.setPadding(dp(12), dp(8), dp(12), dp(8));
+        recentTab.setOnClickListener(v -> showRecent());
+        tabs.addView(recentTab);
         HorizontalScrollView tabStrip = new HorizontalScrollView(this);
         tabStrip.setHorizontalScrollBarEnabled(false);
         tabStrip.addView(tabs);
@@ -403,6 +412,20 @@ public final class MainActivity extends Activity {
         if (expandedRepeat != null) expandedRepeat.setText(repeatLabel());
     }
 
+    private void toggleShuffle() {
+        shuffleEnabled = !shuffleEnabled;
+        getPreferences(MODE_PRIVATE).edit().putBoolean("shuffle", shuffleEnabled).apply();
+        if (expandedShuffle != null) expandedShuffle.setText(shuffleEnabled ? "⇄ Shuffle on" : "⇄ Shuffle off");
+        if (playQueue.isEmpty() || currentIndex < 0) return;
+        // Keep the current song in place and only reorder the songs still to come.
+        List<Track> remaining = new ArrayList<>(playQueue.subList(currentIndex + 1, playQueue.size()));
+        if (shuffleEnabled) Collections.shuffle(remaining);
+        else if (visibleTracks.containsAll(remaining))
+            remaining.sort((a, b) -> Integer.compare(visibleTracks.indexOf(a), visibleTracks.indexOf(b)));
+        playQueue.subList(currentIndex + 1, playQueue.size()).clear();
+        playQueue.addAll(remaining);
+    }
+
     private void expandPlayer() {
         if (current == null) return;
         if (expanded != null && expanded.isShowing()) return;
@@ -470,6 +493,10 @@ public final class MainActivity extends Activity {
         expandedRepeat.setTextSize(14);
         expandedRepeat.setOnClickListener(v -> cycleRepeat());
         actions.addView(expandedRepeat, new LinearLayout.LayoutParams(0, dp(48), 1));
+        expandedShuffle = button(shuffleEnabled ? "⇄ Shuffle on" : "⇄ Shuffle off", CARD);
+        expandedShuffle.setTextSize(13);
+        expandedShuffle.setOnClickListener(v -> toggleShuffle());
+        actions.addView(expandedShuffle, new LinearLayout.LayoutParams(0, dp(48), 1));
         TextView add = button("+ Playlist", CARD); add.setTextSize(14);
         add.setOnClickListener(v -> { if (current != null) choosePlaylist(current); });
         actions.addView(add, new LinearLayout.LayoutParams(0, dp(48), 1));
@@ -481,7 +508,8 @@ public final class MainActivity extends Activity {
         source.setPadding(0, dp(17), 0, 0); content.addView(source);
         expanded.setContentView(screen);
         expanded.setOnDismissListener(v -> { expandedArtwork = null; expandedTitle = null; expandedArtist = null;
-            expandedPlay = null; expandedTime = null; expandedRepeat = null; expandedTimeline = null; expanded = null; });
+            expandedPlay = null; expandedTime = null; expandedRepeat = null; expandedShuffle = null;
+            expandedTimeline = null; expanded = null; });
         Window window = expanded.getWindow();
         if (window != null) window.setLayout(-1, -1);
         expanded.show();
@@ -507,7 +535,7 @@ public final class MainActivity extends Activity {
     }
 
     private void loadTracks(String query) {
-        showingFavorites = false; showingDownloads = false; showingLocal = false; selectedPlaylist = null;
+        showingFavorites = false; showingDownloads = false; showingLocal = false; showingRecent = false; selectedPlaylist = null;
         phoneAction.setVisibility(View.GONE);
         if (savedTab != null) savedTab.setTextColor(MUTED);
         int version = ++requestVersion;
@@ -549,7 +577,7 @@ public final class MainActivity extends Activity {
                 if (tracks.size() > 60) tracks = new ArrayList<>(tracks.subList(0, 60));
                 List<Track> result = tracks;
                 main.post(() -> {
-                    if (version != requestVersion || showingFavorites || isFinishing()) return;
+                    if (version != requestVersion || showingFavorites || showingRecent || isFinishing()) return;
                     message.setText(result.isEmpty() ? "Not in this catalog. Tap here to add music you own on your phone."
                             : "Search title, singer and any film or writer names supplied by artists • long press a song for details");
                     message.setOnClickListener(result.isEmpty() ? v -> pickLocalSongs() : null);
@@ -727,6 +755,13 @@ public final class MainActivity extends Activity {
         stopPlayer();
         current = track; currentIndex = index;
         playQueue.clear(); playQueue.addAll(visibleTracks);
+        if (shuffleEnabled && index >= 0 && index < playQueue.size()) {
+            List<Track> remaining = new ArrayList<>(playQueue);
+            remaining.remove(index);
+            Collections.shuffle(remaining);
+            playQueue.clear(); playQueue.add(track); playQueue.addAll(remaining);
+            currentIndex = 0;
+        }
         int version = ++playVersion;
         player.setVisibility(View.VISIBLE);
         nowTitle.setText(track.title); nowArtist.setText("Connecting • " + track.artist);
@@ -747,6 +782,7 @@ public final class MainActivity extends Activity {
                 applyEffects(mp);
                 consecutiveErrors = 0;
                 mp.start(); playButton.setText("Ⅱ"); updateExpanded();
+                rememberPlayed(track);
             });
             next.setOnCompletionListener(mp -> {
                 if (version != playVersion) return;
@@ -804,6 +840,7 @@ public final class MainActivity extends Activity {
         List<Track> snapshot = new ArrayList<>(playQueue);
         play(next, index);
         playQueue.clear(); playQueue.addAll(snapshot);
+        currentIndex = index;
     }
 
     private void updateProgress() {
@@ -853,6 +890,57 @@ public final class MainActivity extends Activity {
         } catch (Exception ignored) { }
     }
 
+    private void loadRecent() {
+        try {
+            JSONArray data = new JSONArray(getPreferences(MODE_PRIVATE).getString("recent", "[]"));
+            for (int i = 0; i < data.length(); i++) {
+                Track track = savedTrack(data.getJSONObject(i));
+                if (!track.id.isEmpty()) recentTracks.put(track.id, track);
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private void rememberPlayed(Track track) {
+        recentTracks.remove(track.id);
+        LinkedHashMap<String, Track> updated = new LinkedHashMap<>();
+        updated.put(track.id, track);
+        updated.putAll(recentTracks);
+        recentTracks.clear();
+        JSONArray data = new JSONArray();
+        for (Track recent : updated.values()) {
+            if (recentTracks.size() >= 50) break;
+            recentTracks.put(recent.id, recent);
+            data.put(recent.json());
+        }
+        getPreferences(MODE_PRIVATE).edit().putString("recent", data.toString()).apply();
+        if (showingRecent) showRecent();
+    }
+
+    private void showRecent() {
+        showingRecent = true; showingLocal = false; showingFavorites = false;
+        showingDownloads = false; selectedPlaylist = null; requestVersion++;
+        phoneAction.setVisibility(View.GONE);
+        sectionTitle.setText("Recently played");
+        message.setText(recentTracks.isEmpty() ? "Songs you play will appear here."
+                : "Saved on this phone • long press a song to remove it");
+        savedTab.setTextColor(MUTED);
+        showTracks(new ArrayList<>(recentTracks.values()));
+        for (int i = 0; i < rows.getChildCount(); i++) {
+            Track track = visibleTracks.get(i);
+            rows.getChildAt(i).setOnLongClickListener(v -> {
+                new AlertDialog.Builder(this).setMessage("Remove " + track.title + " from recent songs?")
+                        .setNegativeButton("Cancel", null).setPositiveButton("Remove", (dialog, which) -> {
+                            recentTracks.remove(track.id);
+                            JSONArray data = new JSONArray();
+                            for (Track recent : recentTracks.values()) data.put(recent.json());
+                            getPreferences(MODE_PRIVATE).edit().putString("recent", data.toString()).apply();
+                            showRecent();
+                        }).show();
+                return true;
+            });
+        }
+    }
+
     private void saveLocalSongs() {
         JSONArray data = new JSONArray();
         for (Track track : localTracks.values()) data.put(track.json());
@@ -860,7 +948,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showLocalSongs() {
-        showingLocal = true; showingDownloads = false; showingFavorites = false; selectedPlaylist = null; requestVersion++;
+        showingLocal = true; showingDownloads = false; showingFavorites = false; showingRecent = false; selectedPlaylist = null; requestVersion++;
         phoneAction.setVisibility(View.VISIBLE);
         sectionTitle.setText("Music on your phone");
         message.setText(localTracks.isEmpty() ? "Add audio you own, including old Telugu film songs."
@@ -1000,7 +1088,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showPlaylist(String name) {
-        selectedPlaylist = name; showingFavorites = false; showingDownloads = false; showingLocal = false; requestVersion++;
+        selectedPlaylist = name; showingFavorites = false; showingDownloads = false; showingLocal = false; showingRecent = false; requestVersion++;
         phoneAction.setVisibility(View.GONE);
         sectionTitle.setText(name);
         message.setText("Saved on this phone • long press a song to remove it");
@@ -1026,7 +1114,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showDownloads() {
-        showingDownloads = true; showingFavorites = false; showingLocal = false; selectedPlaylist = null; requestVersion++;
+        showingDownloads = true; showingFavorites = false; showingLocal = false; showingRecent = false; selectedPlaylist = null; requestVersion++;
         phoneAction.setVisibility(View.GONE);
         sectionTitle.setText("Offline songs");
         message.setText(downloads.isEmpty() ? "Songs with artist enabled downloads appear here." :
