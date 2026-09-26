@@ -5,6 +5,7 @@ An ad-free Android player for music on [Audius](https://docs.audius.co/). This i
 ## Features
 
 - Search ranks exact song titles first. It also checks artist supplied album, description and tags where available. Telugu discovery is the default; choose Hindi, English or All as needed. Catalog availability depends on Audius.
+- Discover opens with popular matches and recent uploads for the selected language, a shelf for artist-enabled downloads, and a refresh control. The All language shows Audius weekly trending and latest uploads. These are Audius uploads, not a chart of all Telugu movie releases.
 - The **On phone** tab imports audio files you own through Android's file picker without requesting broad storage access. Local song search also checks embedded album, composer and author tags where present. This is a practical way to play older Telugu songs already on your device.
 - Tap the small player or **Expand** to view artwork and a larger player. Playback advances through the current song list. It includes previous, next, 10-second seeking and repeat controls.
 - The expanded player has **Shuffle**. It shuffles upcoming songs while keeping the current song playing. The **Recent** tab lists up to 50 songs actually played, stored on the phone; long press to remove an entry.
